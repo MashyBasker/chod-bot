@@ -5,6 +5,7 @@ import aiohttp
 import discord
 import logging
 import os
+from datetime import timedelta
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -19,8 +20,14 @@ TOKEN = os.environ["DISCORD_TOKEN"]
 WATCHED_USER_ID = int(os.environ["WATCHED_USER_ID"])
 FORBIDDEN_ROLE_ID = int(os.environ["FORBIDDEN_ROLE_ID"])
 
+GIF_TIMEOUT = timedelta(minutes=10)
+SPAM_TIMEOUT = timedelta(minutes=5)
+SPAM_LIMIT = 10
+
 intents = discord.Intents.default()
 intents.members = True
+intents.message_content = True
+intents.messages = True
 
 
 async def main():
@@ -28,6 +35,7 @@ async def main():
     connector = aiohttp.TCPConnector(ssl=ssl_ctx)  # ✅ inside async context
 
     client = discord.Client(intents=intents, connector=connector)
+    message_count = 0
 
     @client.event
     async def on_ready():
@@ -58,6 +66,54 @@ async def main():
                 log.error("Missing permissions to remove role '%s'.", forbidden_role.name)
             except discord.HTTPException as e:
                 log.error("Failed to remove role: %s", e)
+
+    @client.event
+    async def on_message(message: discord.Message):
+        nonlocal message_count
+
+        if message.author.id != WATCHED_USER_ID:
+            return
+
+        message_count += 1
+        log.info("Message count for watched user: %d/%d", message_count, SPAM_LIMIT)
+
+        if message_count >= SPAM_LIMIT:
+            message_count = 0
+            member = message.guild.get_member(WATCHED_USER_ID)
+            if member:
+                log.info("User %s hit %d messages — timing out for %s.", member.display_name, SPAM_LIMIT, SPAM_TIMEOUT)
+                try:
+                    await member.timeout(SPAM_TIMEOUT, reason=f"Sent {SPAM_LIMIT} messages.")
+                    log.info("Spam timeout applied to %s.", member.display_name)
+                except discord.Forbidden:
+                    log.error("Missing permissions to timeout %s.", member.display_name)
+                except discord.HTTPException as e:
+                    log.error("Failed to timeout member: %s", e)
+                return
+
+        is_gif = (
+            any(a.filename.lower().endswith(".gif") for a in message.attachments)
+            or any(e.type == "gifv" for e in message.embeds)
+            or any(e.type == "image" and e.url and e.url.lower().endswith(".gif") for e in message.embeds)
+            or "tenor.com/view/" in message.content
+            or "giphy.com/gifs/" in message.content
+        )
+
+        if not is_gif:
+            return
+
+        member = message.guild.get_member(WATCHED_USER_ID)
+        if member is None:
+            return
+
+        log.info("User %s (%s) sent a GIF — timing out for %s.", member.display_name, member.id, GIF_TIMEOUT)
+        try:
+            await member.timeout(GIF_TIMEOUT, reason="Sent a GIF.")
+            log.info("Timeout applied to %s.", member.display_name)
+        except discord.Forbidden:
+            log.error("Missing permissions to timeout %s.", member.display_name)
+        except discord.HTTPException as e:
+            log.error("Failed to timeout member: %s", e)
 
     async with client:
         await client.start(TOKEN)  # ✅ instead of client.run()
