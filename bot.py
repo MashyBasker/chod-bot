@@ -7,6 +7,7 @@ import logging
 import os
 from datetime import timedelta
 from dotenv import load_dotenv
+from aiohttp import web
 
 load_dotenv()
 
@@ -29,8 +30,23 @@ intents.members = True
 intents.message_content = True
 intents.messages = True
 
+async def health_handler(request):
+    return web.Response(text="OK")
+
+async def start_health_server():
+    app = web.Application()
+    app.router.add_get("/", health_handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.environ.get("PORT", 8000))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    log.info("Health server running on port %d", port)
+
 
 async def main():
+    await start_health_server()
+
     ssl_ctx = ssl.create_default_context(cafile=certifi.where())
     connector = aiohttp.TCPConnector(ssl=ssl_ctx)  # ✅ inside async context
 
